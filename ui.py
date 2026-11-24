@@ -28,7 +28,7 @@ def ask_promotion():
       - Q → queen
       - R → rook
       - B → bishop
-      - K → knight
+      - N or K → knight
       - Any mouse click → cancel promotion (return None)
     
     Returns:
@@ -45,6 +45,7 @@ def ask_promotion():
                 pygame.K_q: chess.QUEEN,
                 pygame.K_r: chess.ROOK,
                 pygame.K_b: chess.BISHOP,
+                pygame.K_n: chess.KNIGHT,
                 pygame.K_k: chess.KNIGHT
             }.get(ev.key, None)
 
@@ -59,7 +60,8 @@ def choose_color(screen, renderer):
     Returns:
         (bool, bool): (running, bot_color)
             - running=False if the user closed the window.
-            - bot_color=True if the bot should play Black, False if the bot plays White.
+            - bot_color: the colour the bot plays, in python-chess terms
+              (chess.WHITE == True, chess.BLACK == False).
     """
     screen.fill(BLACK)
     renderer.show_text("Press W for White or B for Black")
@@ -70,9 +72,9 @@ def choose_color(screen, renderer):
             return False, False
         if ev.type == pygame.KEYDOWN:
             if ev.key == pygame.K_w:
-                return True, False  # user chose White, so bot_color=False
+                return True, chess.BLACK  # user chose White, so the bot plays Black
             if ev.key == pygame.K_b:
-                return True, True   # user chose Black, so bot_color=True
+                return True, chess.WHITE  # user chose Black, so the bot plays White
 
 def check_for_gameover(board: chess.Board, screen: pygame.Surface, renderer: Renderer, bot_color: bool) -> bool:
     """
@@ -83,7 +85,7 @@ def check_for_gameover(board: chess.Board, screen: pygame.Surface, renderer: Ren
         board      : The current chess.Board instance.
         screen     : The Pygame display surface.
         renderer   : Renderer instance used to draw text.
-        bot_color  : Boolean indicating which color the bot plays (True=Black, False=White).
+        bot_color  : The colour the bot plays (chess.WHITE == True, chess.BLACK == False).
 
     Returns:
         bool: False if the game is over (after showing the message), True otherwise.
@@ -119,7 +121,7 @@ def check_for_gameover(board: chess.Board, screen: pygame.Surface, renderer: Ren
     time.sleep(5)
     return False
 
-def make_move(board, move, renderer, redo_stack):
+def make_move(board, move, renderer, redo_stack, clear_redo=True):
     """
     Animate a move and apply it to the board.
 
@@ -133,13 +135,16 @@ def make_move(board, move, renderer, redo_stack):
         move (chess.Move): The move to be made.
         renderer (Renderer): Renderer object used to handle drawing and animations.
         redo_stack (list): Stack used to store undone moves for redo functionality.
+        clear_redo (bool): True for a fresh move (which invalidates redo history),
+            False when the move is being replayed by redo.
     """
     from_sq, to_sq = move.from_square, move.to_square
     piece = board.piece_at(from_sq)
     piece_img = renderer.images[piece.symbol()]
-    renderer.animate_move(board, piece_img, from_sq, to_sq, duration=4)
+    renderer.animate_move(board, piece_img, from_sq, to_sq)
     board.push(move)
-    redo_stack.clear()  # New move invalidates redo history
+    if clear_redo:
+        redo_stack.clear()  # New move invalidates redo history
 
 def undo(board, renderer, redo_stack):
     """
@@ -155,20 +160,17 @@ def undo(board, renderer, redo_stack):
         renderer (Renderer): Renderer object used to handle drawing and animations.
         redo_stack (list): Stack used to store undone moves for redo functionality.
     """
-    if board.move_stack:
+    for _ in range(2):
+        if not board.move_stack:
+            break
         last_move = board.pop()
+        # After pop() the piece is back on from_square; slide it there from
+        # to_square, hiding the copy already drawn on from_square.
         piece = board.piece_at(last_move.from_square)
         if piece:
             piece_img = renderer.images[piece.symbol()]
-            renderer.animate_move(board, piece_img, last_move.to_square, last_move.from_square, duration=4)
-        redo_stack.append(last_move)
-
-    if board.move_stack:
-        last_move = board.pop()
-        piece = board.piece_at(last_move.from_square)
-        if piece:
-            piece_img = renderer.images[piece.symbol()]
-            renderer.animate_move(board, piece_img, last_move.to_square, last_move.from_square, duration=4)
+            renderer.animate_move(board, piece_img, last_move.to_square, last_move.from_square,
+                                  hide_sq=last_move.from_square)
         redo_stack.append(last_move)
             
 def main():
@@ -223,12 +225,10 @@ def main():
             # --- Redo with Right Arrow ---
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_RIGHT:
                 # Push back up to two plies from the redo stack
-                if redo_stack:
-                    next_move = redo_stack.pop()
-                    make_move(board, next_move, renderer, redo_stack)
-                if redo_stack:
-                    next_move = redo_stack.pop()
-                    make_move(board, next_move, renderer, redo_stack)
+                for _ in range(2):
+                    if redo_stack:
+                        next_move = redo_stack.pop()
+                        make_move(board, next_move, renderer, redo_stack, clear_redo=False)
                 selected, legal_moves = None, []
                 continue
 
@@ -247,17 +247,22 @@ def main():
                 # Phase 2: selecting the destination square
                 elif phase == Phase.WAITING_DEST and ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                     dst = mouse_to_square(ev.pos)
-                    candidate = chess.Move(from_square=selected, to_square=dst)
-                    piece = board.piece_at(selected)
+                    clicked = board.piece_at(dst)
 
-                    # Pawn-promotion check
-                    if piece and piece.piece_type == chess.PAWN:
-                        rank_mask = chess.BB_RANK_8 if piece.color == chess.WHITE else chess.BB_RANK_1
-                        # If moving straight into the final rank
-                        if (dst in chess.SquareSet(rank_mask)) and (dst % 8 == selected % 8):
-                            promotion_piece = ask_promotion()
-                            if promotion_piece:
-                                candidate = chess.Move(selected, dst, promotion=promotion_piece)
+                    # Clicking another of your own pieces switches the selection
+                    if clicked and clicked.color != bot_color and dst != selected:
+                        selected = dst
+                        legal_moves = [m for m in board.legal_moves if m.from_square == dst]
+                        continue
+
+                    candidate = chess.Move(from_square=selected, to_square=dst)
+
+                    # Pawn-promotion check: covers straight pushes and diagonal
+                    # captures onto the last rank.
+                    if any(m.to_square == dst and m.promotion for m in legal_moves):
+                        promotion_piece = ask_promotion()
+                        if promotion_piece:
+                            candidate = chess.Move(selected, dst, promotion=promotion_piece)
 
                     # If the constructed move is legal, animate + push
                     if candidate in board.legal_moves:

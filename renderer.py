@@ -37,7 +37,7 @@ class Renderer:
         PIECE_MAP = {
             'P': 'wP.png', 'N': 'wN.png', 'B': 'wB.png',
             'R': 'wR.png', 'Q': 'wQ.png', 'K': 'wK.png',
-            'p': 'bP.png', 'n': 'bn.png', 'b': 'bB.png',
+            'p': 'bP.png', 'n': 'bN.png', 'b': 'bB.png',
             'r': 'bR.png', 'q': 'bQ.png', 'k': 'bK.png'
         }
         self.images = {}
@@ -96,7 +96,7 @@ class Renderer:
         rect = text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
         self.screen.blit(text, rect)
         
-    def animate_move(self, board, piece_img, from_sq, to_sq, duration=0.25):
+    def animate_move(self, board, piece_img, from_sq, to_sq, duration=0.25, hide_sq=None):
         """
         Animate a piece moving from one square to another over the specified duration.
 
@@ -106,10 +106,15 @@ class Renderer:
             from_sq (int): Index of the source square (0–63).
             to_sq (int): Index of the destination square (0–63).
             duration (float): Duration of the animation in seconds (default is 0.25).
+            hide_sq (int | None): Square whose stationary piece should not be drawn
+                (the moving piece itself). Defaults to from_sq. Undo passes the
+                square the piece has already been put back on.
         """
-        fps = 60
+        fps = FPS
         clock = pygame.time.Clock()
-        total_frames = int(duration * fps)
+        total_frames = max(1, int(duration * fps))
+        if hide_sq is None:
+            hide_sq = from_sq
 
         def sq_to_px(sq):
             """
@@ -134,14 +139,14 @@ class Renderer:
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     pygame.quit()
-                    return
+                    raise SystemExit
 
             # 1) Draw board
             self.draw_board()
 
             # 2) Draw all stationary pieces
             for sq, pc in board.piece_map().items():
-                if sq == from_sq:
+                if sq == hide_sq:
                     continue
                 img = self.images[pc.symbol()]
                 r = 7 - (sq // 8)
@@ -155,7 +160,7 @@ class Renderer:
             moving_rect = piece_img.get_rect(center=(cur_x, cur_y))
             self.screen.blit(piece_img, moving_rect.topleft)
 
-            # 4) Show it and wait for next frame
+            # 4) Show it and wait for next frame (inside the loop, so the
+            #    animation really lasts `duration` seconds)
             pygame.display.flip()
-            
-        clock.tick(fps)
+            clock.tick(fps)

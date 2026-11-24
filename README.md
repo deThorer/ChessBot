@@ -35,7 +35,8 @@ ChessBotAI is a Python-based chess-playing application featuring an interactive 
   * **Minimax algorithm** for decision-making.
   * **Alpha-Beta pruning** to cut off large portions of the search tree.
   * **Material + Positional evaluation** via piece‐square tables.
-  * **MVV-LVA and Killer / History heuristics** to order moves and improve pruning.
+  * **MVV-LVA move ordering** (captures first, best victim/attacker trade first) to improve pruning.
+  * **Mate-distance scoring**: prefers the fastest checkmate and delays being mated as long as possible.
 * **Interactive Pygame GUI**
 
   * Click-to-select and move pieces.
@@ -43,8 +44,8 @@ ChessBotAI is a Python-based chess-playing application featuring an interactive 
   * Highlight legal destinations for the selected piece.
 * **Undo & Redo**
 
-  * Press ◀ (Left Arrow) to undo one or two plies (bot + human).
-  * Press ▶ (Right Arrow) to redo moves that have been undone.
+  * Press ◀ (Left Arrow) to undo the last two plies (your move + the bot's reply).
+  * Press ▶ (Right Arrow) to redo the moves that were undone.
 * **Game-Over Detection**
 
   * Automatic detection of checkmate, stalemate, fivefold repetition, 75-move rule, insufficient material.
@@ -56,7 +57,7 @@ ChessBotAI is a Python-based chess-playing application featuring an interactive 
 
 Below is a high-level overview of a typical game session:
 
-1. **Start**: The application opens a Pygame window displaying an empty chessboard.
+1. **Start**: The application opens a Pygame window with a side-selection prompt.
 2. **Choose Side**: You’re prompted to press **W** (White) or **B** (Black).
 3. **Gameplay**:
 
@@ -64,7 +65,7 @@ Below is a high-level overview of a typical game session:
    * If you play Black, the AI (bot) moves first as White.
 4. **Animations**: Each move—your own or the bot’s—is animated with a smooth sliding piece transition.
 5. **Undo/Redo**: Press **Left Arrow (◀)** to undo, **Right Arrow (▶)** to redo.
-6. **End**: When the game is over (checkmate/draw), a message appears for 2 seconds before exiting.
+6. **End**: When the game is over (checkmate/draw), a message appears for 5 seconds before exiting.
 
 ---
 
@@ -72,12 +73,12 @@ Below is a high-level overview of a typical game session:
 
 ### Requirements
 
-* Python 3.7+
+* Python 3.8+
 * The following packages (see `requirements.txt`):
 
   ```text
-  pygame==2.3.0
-  chess==1.9.1
+  pygame>=2.3.0
+  chess>=1.9.1
   ```
 
 ### Installation Steps
@@ -85,8 +86,8 @@ Below is a high-level overview of a typical game session:
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/amiit04/ChessBotAI.git
-   cd ChessBotAI
+   git clone https://github.com/deThorer/ChessBot.git
+   cd ChessBot
    ```
 
 2. **Create and activate a virtual environment** (recommended)
@@ -113,7 +114,7 @@ Below is a high-level overview of a typical game session:
 ## Project Structure
 
 ```
-ChessBotAI/
+ChessBot/
 ├── img/                        # PNG images for each chess piece
 │   ├── wP.png
 │   ├── wN.png
@@ -138,7 +139,8 @@ ChessBotAI/
   FPS = 60
   WHITE = (255, 255, 255)
   GREEN = (106, 168, 79)
-  FONT_SIZE = 60
+  BLACK = (0, 0, 0)
+  FONT_SIZE = 50
   ```
 
 * **evaluation.py**
@@ -164,7 +166,7 @@ ChessBotAI/
   Orchestrates the Pygame window and game loop:
 
   * `mouse_to_square(pos)` maps mouse clicks to 0–63 square indices
-  * `ask_promotion()` blocks until Q/R/B/K or click to decide pawn promotion
+  * `ask_promotion()` blocks until Q/R/B/N (or K) or a click to decide pawn promotion
   * `choose_color()` prompts “Press W or B”
   * Main loop:
 
@@ -189,7 +191,7 @@ ChessBotAI/
 2. **Choose Side**
 
    * `choose_color()` displays “Press W for White or B for Black.”
-   * Depending on your choice, `bot_color` is set to `True` (Black bot) or `False` (White bot).
+   * Depending on your choice, `bot_color` is set to the bot's colour in python-chess terms (`chess.WHITE == True`, `chess.BLACK == False`). Choosing White makes the bot Black.
 
 3. **Main Loop**
 
@@ -203,7 +205,7 @@ ChessBotAI/
      * Phase 1: Wait for **MOUSEBUTTONDOWN** → record `selected_square` and gather `legal_moves`.
      * Phase 2: Wait for **MOUSEBUTTONDOWN** → if clicked square is a legal destination:
 
-       * If a pawn push to final rank → call `ask_promotion()`.
+       * If any legal move to that square is a promotion (push or capture) → call `ask_promotion()`.
        * Animate, `board.push(move)`, clear `redo_stack`.
    * **Undo/Redo**:
 
@@ -212,7 +214,7 @@ ChessBotAI/
        * Pop last two moves (if exist), animate each backwards, and push them onto `redo_stack`.
      * **→ (Right Arrow)** → call `redo()`:
 
-       * Pop up to two moves from `redo_stack`, animate forwards, and push them onto `board`.
+       * Pop up to two moves from `redo_stack`, animate forwards, and push them onto `board` (without clearing the rest of the redo history).
    * **Rendering**:
 
      * `renderer.draw_board()`, `renderer.draw_pieces(board)`, and if `selected` ≠ None, call `renderer.highlight({'moves': legal_moves})`.
@@ -229,16 +231,15 @@ ChessBotAI/
 
 #### Material + Positional Evaluation
 
-* **Material**: Each piece has a base value in `PIECE_VALUES` (centipawns).
-* **Piece-Square Tables**: `PIECE_SQUARE_TABLES` holds an 8×8 matrix for each piece type. White’s score is taken directly; Black’s is mirrored vertically.
+* **Material**: Each piece has a base value in `PIECE_VALUES` (pawn = 10, knight/bishop = 30, rook = 50, queen = 90).
+* **Piece-Square Tables**: `PIECE_SQUARE_TABLES` holds an 8×8 matrix for each piece type, written from White's side with rank 8 in row 0. python-chess numbers squares from a1 = 0, so White reads row `7 - rank` and Black reads the mirrored row `rank`.
 * **Total evaluation**:
 
   ```python
-  val = sum(material_sign * base_value for each piece)
-  + sum(positional_sign * PST_value for each piece at its square)
+  val = sum(sign * (base_value + PST_value) for each piece)
   ```
 
-  where `material_sign = +1` for White, `-1` for Black; similarly for positional.
+  where `sign = +1` for White and `-1` for Black, so the score is positive when White is better.
 
 #### Minimax with Alpha-Beta Pruning
 
@@ -252,7 +253,7 @@ ChessBotAI/
 
   1. `board.is_game_over()`:
 
-     * If `is_checkmate()`: return `±∞` based on side to move.
+     * If `is_checkmate()`: return `∓(MATE_SCORE − ply)` for the side to move (a finite score, so a mate in 1 beats a mate in 3).
      * Else (draw/stalemate): return `0`.
   2. `depth == 0`: return `evaluate_board(board)`.
 
@@ -264,6 +265,7 @@ ChessBotAI/
     ```python
     moves.sort(key=lambda m: (board.is_capture(m), capture_score(board, m)), reverse=True)
     ```
+  * Start with `best_move = moves[0]`, so a legal move is returned even when every line loses.
   * If `maximizing_player`:
 
     * Initialize `best_score = -∞`.
@@ -286,7 +288,7 @@ ChessBotAI/
   * `capture_score(board, move) = PIECE_VALUES[victim] * 100 – PIECE_VALUES[attacker]`
   * Puts captures first, prioritized by capturing the highest-value piece with the lowest-value attacker.
 
-> *Optional Extensions (not fully implemented here):*
+> *Possible extensions (not implemented here):*
 >
 > * **Killer Moves**: store moves that caused beta-cutoffs to try them early at the same depth.
 > * **History Heuristic**: track how often quiet moves cause cutoffs across all depths.
@@ -308,11 +310,11 @@ ChessBotAI/
 
 3. **Make a Move** (when it’s your turn):
 
-   * Click on a square containing your piece → legal moves highlight with yellow circles.
+   * Click on a square containing your piece → legal moves highlight with yellow circles. Clicking another of your pieces switches the selection.
    * Click on a highlighted square → piece slides there (animated).
    * If a pawn reaches the final rank, press one of:
 
-     * **Q** (Queen), **R** (Rook), **B** (Bishop), **K** (Knight).
+     * **Q** (Queen), **R** (Rook), **B** (Bishop), **N** or **K** (Knight).
      * Or click anywhere to cancel promotion (no move).
 
 4. **Undo / Redo**:
@@ -323,7 +325,7 @@ ChessBotAI/
 5. **Game Over**:
 
    * When checkmate or draw occurs, a centered message appears (white text on black background).
-   * The message remains for 2 seconds, then the application exits.
+   * The message remains for 5 seconds, then the application exits.
 
 ---
 
@@ -333,6 +335,12 @@ ChessBotAI/
 
   * By default, `ChessLogic(depth=3)` searches to depth 3 plies.
   * Increase to depth 4 or 5 for a stronger engine, but be aware of exponential time growth.
+
+* **Known limitations** (good next steps):
+
+  * No quiescence search, so the engine can misjudge positions in the middle of a capture sequence (horizon effect).
+  * No transposition table (the scaffolding is commented out in `evaluation.py`).
+  * The search runs on the UI thread, so the window does not repaint while the bot is thinking.
 
 * **Time Control / Iterative Deepening**:
 
@@ -364,8 +372,8 @@ ChessBotAI/
   * Make sure event polling remains active inside `animate_move()`. If you remove the `for ev in pygame.event.get():` loop, Pygame will think the window is “Not Responding.”
 * **Promotion Not Triggering**
 
-  * Confirm that you click a pawn moving straight into the final rank (same file, one rank before).
-  * Then press Q/R/B/K while the board is stationary—do not click again until you choose a piece.
+  * Promotion triggers for any pawn move onto the last rank, including captures.
+  * Press Q/R/B/N while the board is stationary—a click cancels the promotion.
 
 ---
 
@@ -379,7 +387,7 @@ ChessBotAI/
    ```
 3. **Install dependencies** and run tests (if any).
 4. **Commit** your changes with clear messages.
-5. **Push** to your fork and open a **Pull Request** against the `master` branch.
+5. **Push** to your fork and open a **Pull Request** against the `main` branch.
 6. Include a brief description of your changes, any new dependencies, and what you tested.
 
 We welcome enhancements such as: improved heuristics, GUI polish, time controls, UCI support, or modularizing the code further.

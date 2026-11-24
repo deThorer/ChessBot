@@ -1,5 +1,5 @@
 import chess
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 class ChessLogic:
     """
@@ -7,11 +7,11 @@ class ChessLogic:
     piece-square tables, and a minimax search with alpha-beta pruning.
 
     Attributes:
-        PIECE_VALUES (Dict[int, int]): Base material values for each type of piece in centipawns.
+        PIECE_VALUES (Dict[int, int]): Base material values for each type of piece (pawn = 10).
         PIECE_SQUARE_TABLES (Dict[int, List[List[float]]]): Positional score tables for pieces based on square location.
         search_depth (int): Maximum depth to explore in the minimax tree.
     """
-    # Base piece values (centipawns)
+    # Base piece values (pawn = 10, i.e. tenths of a pawn)
     PIECE_VALUES: Dict[int, int] = {
         chess.PAWN:   10,
         chess.KNIGHT: 30,
@@ -85,6 +85,10 @@ class ChessLogic:
         ],
     }
 
+    # Score for a checkmate. Finite (rather than infinity) so that a faster mate
+    # can be scored higher than a slower one: see minimax().
+    MATE_SCORE: int = 100000
+
     def __init__(self, depth: int = 3):
         """
         Initializes the ChessLogic object.
@@ -104,7 +108,7 @@ class ChessLogic:
             piece (chess.Piece): The chess piece to evaluate.
 
         Returns:
-            int: Material value in centipawns.
+            int: Material value (pawn = 10).
         """
         return self.PIECE_VALUES.get(piece.piece_type, 0)
 
@@ -112,17 +116,25 @@ class ChessLogic:
         """
         Returns the positional value of a piece based on its location.
 
+        The tables above are written the way a board is printed from White's
+        side: row 0 is rank 8 (the far side) and row 7 is rank 1. python-chess
+        numbers squares from a1 = 0 up to h8 = 63, so rank 1 is pos // 8 == 0.
+        White therefore reads row 7 - rank, and Black (the mirror image) reads
+        row rank.
+
         Args:
             piece_type (int): Type of the piece (e.g., chess.KNIGHT).
             pos (int): Square index (0-63).
             color (bool): True for white, False for black.
 
         Returns:
-            float: Positional score from the piece-square table.
+            float: Positional score from the piece-square table, from the point
+            of view of the piece's own side.
         """
         table = self.PIECE_SQUARE_TABLES[piece_type]
-        row = pos // 8 if color else 7 - (pos // 8)
-        col = pos % 8
+        rank = chess.square_rank(pos)
+        row = 7 - rank if color == chess.WHITE else rank
+        col = chess.square_file(pos)
         return table[row][col]
 
     def evaluate_board(self, board: chess.Board) -> float:
@@ -136,16 +148,10 @@ class ChessLogic:
             float: Evaluation score. Positive if white is better, negative if black is better.
         """
         val = 0.0
-        # Material
-        for piece in board.piece_map().values():
-            v = self.piece_value(piece)
-            val += v if piece.color == chess.WHITE else -v
-        # Positional
-        for sq in range(64):
-            piece = board.piece_at(sq)
-            if piece:
-                color = (piece.color == chess.WHITE)
-                val += self.pos_value(piece.piece_type, sq, color)
+        for sq, piece in board.piece_map().items():
+            score = self.piece_value(piece) + self.pos_value(piece.piece_type, sq, piece.color)
+            # Both material and position count for the piece's own side.
+            val += score if piece.color == chess.WHITE else -score
         return val
     
     def capture_score(self, board, move):
@@ -159,13 +165,16 @@ class ChessLogic:
         Returns:
             int: Capture score. Higher values are better captures.
         """
-        if board.piece_at(move.to_square) is None:
+        if board.is_en_passant(move):
+            victim = chess.PAWN
+        elif board.piece_at(move.to_square) is None:
             return 0
-        victim = board.piece_at(move.to_square).piece_type
+        else:
+            victim = board.piece_at(move.to_square).piece_type
         attacker = board.piece_at(move.from_square).piece_type
         return self.PIECE_VALUES[victim]*100 - self.PIECE_VALUES[attacker]
 
-    def minimax(self, board: chess.Board, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    def minimax(self, board: chess.Board, depth: int, alpha: float, beta: float, maximizing_player: bool) -> Tuple[float, Optional[chess.Move]]:
         """
         Recursive minimax search with alpha-beta pruning.
 
@@ -186,10 +195,16 @@ class ChessLogic:
         #     return entry[1]
         
         best_move = None
-        
+        # Distance from the root, used to prefer quicker mates.
+        ply = self.search_depth - depth
+
         if board.is_game_over():
             if board.is_checkmate():
-                score = -float('inf') if maximizing_player else float('inf')
+                # The side to move has been mated. Mates closer to the root get
+                # a larger magnitude, so the bot plays the fastest mate and, when
+                # losing, delays mate as long as possible.
+                mate = self.MATE_SCORE - ply
+                score = -mate if maximizing_player else mate
             else:
                 score = 0
             return score, None
@@ -200,13 +215,15 @@ class ChessLogic:
             moves = list(board.legal_moves)
             # MVV-LVA (Most Valuable Victim – Least Valuable Aggressor) based sorting
             moves.sort(key=lambda m: (board.is_capture(m), self.capture_score(board, m)), reverse=True)
+            # Always have a legal move to return, even if every line loses.
+            best_move = moves[0]
             if maximizing_player:
                 score = -float('inf')
                 for mv in moves:
                     board.push(mv)
-                    val, mmv = self.minimax(board, depth-1, alpha, beta, False)
+                    val, _ = self.minimax(board, depth-1, alpha, beta, False)
                     board.pop()
-                    if score < val:
+                    if val > score:
                         score = val
                         best_move = mv
                     alpha = max(alpha, val)
@@ -216,9 +233,9 @@ class ChessLogic:
                 score = float('inf')
                 for mv in moves:
                     board.push(mv)
-                    val, mmv = self.minimax(board, depth-1, alpha, beta, True)
+                    val, _ = self.minimax(board, depth-1, alpha, beta, True)
                     board.pop()
-                    if score > val:
+                    if val < score:
                         score = val
                         best_move = mv
                     beta = min(beta, val)
