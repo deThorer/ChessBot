@@ -1,2 +1,2 @@
-pygame==2.3.0
-chess==1.9.1
+pygame>=2.3.0
+chess>=1.9.1
